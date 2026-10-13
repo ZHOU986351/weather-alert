@@ -47,8 +47,11 @@ SENT_PATH = Path(os.environ.get("SENT_PATH") or (BASE_DIR / "sent_alerts.json"))
 GEO_PATH = "/geo/v2/city/lookup"
 WARNING_PATH_TMPL = "/weatheralert/v1/current/{lat}/{lon}"
 
-# PushPlus 推送接口
+# PushPlus 推送接口（推给自己）
 PUSHPLUS_URL = "http://www.pushplus.plus/send"
+
+# WxPusher 推送接口（免费群发：推给所有关注应用的人，供几十位同事接收）
+WXPUSHER_URL = "https://wxpusher.zjiecode.com/api/send/message"
 
 # 本地循环模式：每多少分钟查一次（上云后由云函数定时触发器接管，此参数仅本地用）
 CHECK_INTERVAL_MIN = 15
@@ -143,6 +146,7 @@ def load_config() -> dict:
         "PUSHPLUS_TOKEN": "pushplus_token",
         "QWEATHER_KEY": "qweather_key",
         "QWEATHER_HOST": "qweather_host",
+        "WXPUSHER_APP_TOKEN": "wxpusher_app_token",
     }
     for env_name, key in env_map.items():
         val = os.environ.get(env_name, "").strip()
@@ -264,6 +268,26 @@ def pushplus_send(token: str, title: str, content: str) -> bool:
     return False
 
 
+def wxpusher_send(app_token: str, title: str, content: str) -> bool:
+    """
+    通过 WxPusher 群发（免费、无实名，推给所有关注应用的人）。
+    不传 uids/topicIds，即默认推送给应用的全部关注用户。
+    contentType=1 表示纯文字（各端兼容性最好，微信渠道同样支持）。
+    返回是否成功（成功码为 1000）。
+    """
+    data = {
+        "appToken": app_token,
+        "summary": title[:100],  # 摘要最长 100 字符
+        "content": content,
+        "contentType": 1,        # 1=文字 2=html 3=markdown
+    }
+    resp = http_post_json(WXPUSHER_URL, data)
+    if resp.get("code") == 1000:
+        return True
+    log(f"  ! WxPusher 返回异常：code={resp.get('code')}，msg={resp.get('msg')}")
+    return False
+
+
 def format_alert(a: dict) -> str:
     """把一条预警格式化成可读文本。"""
     type_name = (a.get("eventType") or {}).get("name", "未知")
@@ -295,6 +319,7 @@ def run_once(cfg: dict) -> dict:
     """执行一轮：查各城市预警 → 过滤 → 去重 → 推送。返回统计结果。"""
     key = cfg.get("qweather_key", "")
     token = cfg.get("pushplus_token", "")
+    app_token = cfg.get("wxpusher_app_token", "")
     host = cfg.get("qweather_host", "")
     cities = cfg.get("cities", [])
     loc_map = cfg.get("location_map", {})
@@ -340,16 +365,26 @@ def run_once(cfg: dict) -> dict:
 
             content = head + format_alert(a)
 
-            if token and pushplus_send(token, title, content):
-                log(f"✓ 已推送：{title}")
-                newly_sent += 1
-            elif not token:
-                log(f"· [未配置 token，跳过推送] {title}")
-            else:
-                log(f"✗ 推送失败：{title}")
+            # 双通道推送：PushPlus 推给自己，WxPusher 群发所有关注的人；任一成功即算推送成功
+            ok_pushplus = bool(token) and pushplus_send(token, title, content)
+            ok_wxpusher = bool(app_token) and wxpusher_send(app_token, title, content)
 
-            if aid:
-                sent_ids.add(aid)
+            if ok_pushplus:
+                log(f"✓ PushPlus 已推送给你：{title}")
+            elif token:
+                log(f"✗ PushPlus 推送失败：{title}")
+
+            if ok_wxpusher:
+                log(f"✓ WxPusher 已群发给所有关注者：{title}")
+            elif app_token:
+                log(f"✗ WxPusher 推送失败：{title}")
+
+            if ok_pushplus or ok_wxpusher:
+                newly_sent += 1
+                if aid:
+                    sent_ids.add(aid)
+            elif not token and not app_token:
+                log(f"· [未配置任何推送通道，跳过推送] {title}")
 
     save_sent_ids(sent_ids)
     return {"checked": len(cities), "sent": newly_sent}
@@ -362,6 +397,7 @@ def selfcheck(cfg: dict) -> None:
     log("=" * 50)
 
     token = cfg.get("pushplus_token", "")
+    app_token = cfg.get("wxpusher_app_token", "")
     key = cfg.get("qweather_key", "")
     host = cfg.get("qweather_host", "")
 
@@ -370,6 +406,11 @@ def selfcheck(cfg: dict) -> None:
         log("✗ pushplus_token 为空 —— 请到 www.pushplus.plus 登录后复制 token 填进 config.json")
     else:
         log(f"✓ pushplus_token 已配置（{token[:6]}…）")
+
+    if not app_token:
+        log("· wxpusher_app_token 未配置 —— 如需给同事群发，请到 wxpusher.zjiecode.com/admin 创建应用后填入 AT_ 开头的 token")
+    else:
+        log(f"✓ wxpusher_app_token 已配置（{app_token[:6]}…）")
 
     if not key:
         log("✗ qweather_key 为空 —— 请到和风天气控制台复制 API Key 填进 config.json")
@@ -388,6 +429,14 @@ def selfcheck(cfg: dict) -> None:
             log("✓ 已发送测试消息到你的微信，请检查是否收到" if ok else "✗ 测试消息发送失败，请检查 token 是否正确")
         except Exception as e:
             log(f"✗ PushPlus 测试异常：{e}")
+
+    # 2.5 测试 WxPusher 通道（会推给所有关注应用的人）
+    if app_token:
+        try:
+            ok = wxpusher_send(app_token, "天气预警·自检", "这是一条测试消息，收到说明 WxPusher 群发通道正常。")
+            log("✓ 已通过 WxPusher 群发测试消息（所有关注者都会收到）" if ok else "✗ WxPusher 测试消息发送失败，请检查 appToken 是否正确")
+        except Exception as e:
+            log(f"✗ WxPusher 测试异常：{e}")
 
     # 3. 测试和风 key + 列出各城市当前预警
     if key and host:

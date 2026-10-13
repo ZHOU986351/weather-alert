@@ -28,6 +28,8 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           QWEATHER_KEY: ${{ secrets.QWEATHER_KEY }}
           QWEATHER_HOST: ${{ secrets.QWEATHER_HOST }}
+          # WxPusher 群发 token（免费，推给所有关注应用的人）
+          WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
           # 城市与经纬度不敏感，直接写在这里（想加区县就改这两行）
           CITIES: '["崂山区", "即墨区", "市南区", "市北区", "城阳区", "李沧区", "黄岛区"]'
           LOCATION_MAP: '{"崂山区": {"lat": 36.10, "lon": 120.47}, "即墨区": {"lat": 36.39, "lon": 120.45}, "市南区": {"lat": 36.07, "lon": 120.40}, "市北区": {"lat": 36.08, "lon": 120.36}, "城阳区": {"lat": 36.31, "lon": 120.39}, "李沧区": {"lat": 36.16, "lon": 120.42}, "黄岛区": {"lat": 35.96, "lon": 120.20}}'
