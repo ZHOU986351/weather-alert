@@ -147,6 +147,7 @@ def load_config() -> dict:
         "QWEATHER_KEY": "qweather_key",
         "QWEATHER_HOST": "qweather_host",
         "WXPUSHER_APP_TOKEN": "wxpusher_app_token",
+        "WECOM_WEBHOOK_URL": "wecom_webhook_url",
     }
     for env_name, key in env_map.items():
         val = os.environ.get(env_name, "").strip()
@@ -288,6 +289,30 @@ def wxpusher_send(app_token: str, title: str, content: str) -> bool:
     return False
 
 
+def _truncate_bytes(s: str, max_bytes: int) -> str:
+    """按 UTF-8 字节数安全截断字符串，避免截断到多字节字符中间。"""
+    b = s.encode("utf-8")
+    if len(b) <= max_bytes:
+        return s
+    return b[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def wecom_webhook_send(webhook_url: str, title: str, content: str) -> bool:
+    """
+    通过企业微信群机器人（消息推送 Webhook）推送。
+    这是免费群发方案：群里所有人自动收到，无需装 App、无需同事任何操作。
+    文本消息 content 最长 2048 字节（UTF-8），超出自动截断。
+    成功时响应 errcode == 0。
+    """
+    text = _truncate_bytes(f"{title}\n\n{content}", 2000)
+    data = {"msgtype": "text", "text": {"content": text}}
+    resp = http_post_json(webhook_url, data)
+    if resp.get("errcode") == 0:
+        return True
+    log(f"  ! 企业微信返回异常：errcode={resp.get('errcode')}，errmsg={resp.get('errmsg')}")
+    return False
+
+
 def format_alert(a: dict) -> str:
     """把一条预警格式化成可读文本。"""
     type_name = (a.get("eventType") or {}).get("name", "未知")
@@ -320,6 +345,7 @@ def run_once(cfg: dict) -> dict:
     key = cfg.get("qweather_key", "")
     token = cfg.get("pushplus_token", "")
     app_token = cfg.get("wxpusher_app_token", "")
+    wecom_url = cfg.get("wecom_webhook_url", "")
     host = cfg.get("qweather_host", "")
     cities = cfg.get("cities", [])
     loc_map = cfg.get("location_map", {})
@@ -365,9 +391,15 @@ def run_once(cfg: dict) -> dict:
 
             content = head + format_alert(a)
 
-            # 双通道推送：PushPlus 推给自己，WxPusher 群发所有关注的人；任一成功即算推送成功
+            # 多通道推送：企业微信（群，主推）/ PushPlus（自己）/ WxPusher（群发关注者）；任一成功即算成功
+            ok_wecom = bool(wecom_url) and wecom_webhook_send(wecom_url, title, content)
             ok_pushplus = bool(token) and pushplus_send(token, title, content)
             ok_wxpusher = bool(app_token) and wxpusher_send(app_token, title, content)
+
+            if ok_wecom:
+                log(f"✓ 企业微信群已推送：{title}")
+            elif wecom_url:
+                log(f"✗ 企业微信推送失败：{title}")
 
             if ok_pushplus:
                 log(f"✓ PushPlus 已推送给你：{title}")
@@ -379,11 +411,11 @@ def run_once(cfg: dict) -> dict:
             elif app_token:
                 log(f"✗ WxPusher 推送失败：{title}")
 
-            if ok_pushplus or ok_wxpusher:
+            if ok_wecom or ok_pushplus or ok_wxpusher:
                 newly_sent += 1
                 if aid:
                     sent_ids.add(aid)
-            elif not token and not app_token:
+            elif not (wecom_url or token or app_token):
                 log(f"· [未配置任何推送通道，跳过推送] {title}")
 
     save_sent_ids(sent_ids)
@@ -398,6 +430,7 @@ def selfcheck(cfg: dict) -> None:
 
     token = cfg.get("pushplus_token", "")
     app_token = cfg.get("wxpusher_app_token", "")
+    wecom_url = cfg.get("wecom_webhook_url", "")
     key = cfg.get("qweather_key", "")
     host = cfg.get("qweather_host", "")
 
@@ -406,6 +439,11 @@ def selfcheck(cfg: dict) -> None:
         log("✗ pushplus_token 为空 —— 请到 www.pushplus.plus 登录后复制 token 填进 config.json")
     else:
         log(f"✓ pushplus_token 已配置（{token[:6]}…）")
+
+    if not wecom_url:
+        log("· wecom_webhook_url 未配置 —— 如需推送到企业微信群，请让群主建「消息推送」机器人后把 webhook 地址填进来")
+    else:
+        log(f"✓ wecom_webhook_url 已配置（{wecom_url[:40]}…）")
 
     if not app_token:
         log("· wxpusher_app_token 未配置 —— 如需给同事群发，请到 wxpusher.zjiecode.com/admin 创建应用后填入 AT_ 开头的 token")
@@ -422,7 +460,15 @@ def selfcheck(cfg: dict) -> None:
     else:
         log(f"✓ qweather_host 已配置（{host}）")
 
-    # 2. 测试 PushPlus 通道
+    # 2. 测试企业微信群机器人通道
+    if wecom_url:
+        try:
+            ok = wecom_webhook_send(wecom_url, "天气预警·自检", "这是一条测试消息，收到说明企业微信群推送通道正常。")
+            log("✓ 已发测试消息到企业微信群，请检查群内是否收到" if ok else "✗ 企业微信测试消息发送失败，请检查 webhook 地址是否正确")
+        except Exception as e:
+            log(f"✗ 企业微信测试异常：{e}")
+
+    # 2.5 测试 PushPlus 通道
     if token:
         try:
             ok = pushplus_send(token, "天气预警·自检", "这是一条测试消息，收到说明推送通道正常。")
@@ -430,7 +476,7 @@ def selfcheck(cfg: dict) -> None:
         except Exception as e:
             log(f"✗ PushPlus 测试异常：{e}")
 
-    # 2.5 测试 WxPusher 通道（会推给所有关注应用的人）
+    # 2.6 测试 WxPusher 通道（会推给所有关注应用的人）
     if app_token:
         try:
             ok = wxpusher_send(app_token, "天气预警·自检", "这是一条测试消息，收到说明 WxPusher 群发通道正常。")
