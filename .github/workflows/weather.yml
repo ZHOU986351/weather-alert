@@ -1,0 +1,46 @@
+name: 天气预警推送
+
+on:
+  schedule:
+    # 每 15 分钟运行一次（*/15 只与分钟相关，不受时区影响）
+    - cron: '*/15 * * * *'
+  # 支持手动触发，方便首次测试
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  weather-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 运行天气预警脚本
+        env:
+          # 敏感信息走 GitHub Secrets，不写死在仓库里
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          QWEATHER_KEY: ${{ secrets.QWEATHER_KEY }}
+          QWEATHER_HOST: ${{ secrets.QWEATHER_HOST }}
+          # 城市与经纬度不敏感，直接写在这里（想加区县就改这两行）
+          CITIES: '["崂山区", "即墨区"]'
+          LOCATION_MAP: '{"崂山区": {"lat": 36.10, "lon": 120.47}, "即墨区": {"lat": 36.39, "lon": 120.45}}'
+        run: python weather_alert.py
+
+      - name: 提交去重记录
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_alerts.json
+          if git diff --cached --quiet; then
+            echo "去重记录无变化，跳过提交"
+          else
+            git commit -m "chore: 更新去重记录 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi

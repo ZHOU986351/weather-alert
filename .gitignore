@@ -1,0 +1,6 @@
+# 含真实密钥的本地配置，绝不上传到 GitHub
+config.json
+
+# Python 缓存
+__pycache__/
+*.pyc
