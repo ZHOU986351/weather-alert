@@ -70,6 +70,57 @@ SEVERITY_CN = {
     "unknown": "未知",
 }
 
+# 天气类型 → 防范/处置措施（通用底稿，供参考，请按单位规章制度修订）
+# 说明：这是面向地铁/轨道交通行车安全起草的通用安全常识，非官方条文；
+#       高架/地面段的具体限速值、处置流程等，请按单位应急预案替换或补充。
+_ACT_WIND = (
+    "1. 加强线路瞭望，注意接触网异物、彩钢瓦、广告牌等高空坠物\n"
+    "2. 高架/地面段按大风应急预案限速运行\n"
+    "3. 关注弓网状态，发现异物侵入限界立即报告并处置\n"
+    "4. 必要时申请临时扣车或停运"
+)
+_ACT_RAIN = (
+    "1. 加强瞭望，注意线路积水、边坡溜坍、排水设施状态\n"
+    "2. 通过积水区段控制车速，防止水淹轨面\n"
+    "3. 关注车站出入口、隧道口、风井防汛情况\n"
+    "4. 发现险情立即报告，必要时限速或停运"
+)
+_ACT_THUNDER = (
+    "1. 户外作业人员立即停止作业，撤离至安全区域\n"
+    "2. 关注接触网、信号设备防雷及跳闸情况\n"
+    "3. 加强设备监控，防范雷击影响行车"
+)
+_ACT_SNOW = (
+    "1. 加强瞭望，注意轨面结冰、积雪\n"
+    "2. 高架/地面段按冰雪天预案限速运行\n"
+    "3. 关注道岔融雪装置与防滑措施\n"
+    "4. 车辆段、折返线注意防滑、除冰除雪"
+)
+_ACT_FOG = (
+    "1. 低能见度时加强瞭望，按规定限速运行\n"
+    "2. 加强鸣笛示警\n"
+    "3. 必要时申请临时扣车"
+)
+_ACT_HEAT = (
+    "1. 注意防暑降温，合理安排作业与休息\n"
+    "2. 关注钢轨胀轨、接触网弛度变化\n"
+    "3. 加强设备防过热检查"
+)
+_ACT_COLD = (
+    "1. 注意防寒保暖\n"
+    "2. 关注设备防冻、管道防裂\n"
+    "3. 高架/地面段注意结冰风险"
+)
+DEFAULT_ACTION_MAP = {
+    "大风": _ACT_WIND, "台风": _ACT_WIND, "强对流": _ACT_WIND,
+    "暴雨": _ACT_RAIN, "大雨": _ACT_RAIN, "冰雹": _ACT_RAIN,
+    "雷电": _ACT_THUNDER, "雷暴": _ACT_THUNDER,
+    "暴雪": _ACT_SNOW, "道路结冰": _ACT_SNOW, "霜冻": _ACT_SNOW, "低温": _ACT_SNOW,
+    "大雾": _ACT_FOG, "霾": _ACT_FOG,
+    "高温": _ACT_HEAT,
+    "寒潮": _ACT_COLD, "降温": _ACT_COLD,
+}
+
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -167,6 +218,16 @@ def load_config() -> dict:
             cfg["location_map"] = json.loads(loc_env)
         except Exception:
             pass
+
+    # 防范措施库：默认用代码里的 DEFAULT_ACTION_MAP，config.json 或 env 可覆盖
+    action_env = os.environ.get("ACTION_MAP", "").strip()
+    if action_env:
+        try:
+            cfg["action_map"] = json.loads(action_env)
+        except Exception:
+            pass
+    elif "action_map" not in cfg:
+        cfg["action_map"] = DEFAULT_ACTION_MAP
 
     return cfg
 
@@ -338,6 +399,31 @@ def format_alert(a: dict) -> str:
     return "\n".join(lines)
 
 
+def match_actions(type_name: str, action_map: dict) -> list:
+    """
+    按预警类型匹配防范措施，返回 [(关键词, 措施文本), ...]。
+    用子串匹配：action_map 的 key 出现在 type_name 里即命中。
+    """
+    matched = []
+    for kw, action in action_map.items():
+        if kw and kw in (type_name or ""):
+            matched.append((kw, action))
+    return matched
+
+
+def append_actions(content: str, type_name: str, action_map: dict) -> str:
+    """在预警正文末尾追加防范/处置措施。命中多条时逐条列出。"""
+    actions = match_actions(type_name, action_map)
+    if not actions:
+        return content
+    parts = [content, "", "──────────", "【防范措施】"]
+    for kw, act in actions:
+        if len(actions) > 1:
+            parts.append(f"〔{kw}〕")
+        parts.append(act)
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------- 主流程
 
 def run_once(cfg: dict) -> dict:
@@ -350,6 +436,7 @@ def run_once(cfg: dict) -> dict:
     cities = cfg.get("cities", [])
     loc_map = cfg.get("location_map", {})
     include_types = cfg.get("include_types", [])
+    action_map = cfg.get("action_map") or DEFAULT_ACTION_MAP
 
     if not host:
         log("✗ 未配置 qweather_host —— 请到和风天气控制台「设置」里复制你的专属 API Host 填进 config.json")
@@ -385,11 +472,13 @@ def run_once(cfg: dict) -> dict:
             if msg_code == "cancel":
                 title = f"【预警解除】{city} {type_name}"
                 head = f"{city}的{type_name}预警已解除。\n\n"
+                content = head + format_alert(a)
             else:
                 title = f"【天气预警】{city} {type_name}{level}预警"
                 head = f"{city}发布{type_name}预警，请注意防范。\n\n"
-
-            content = head + format_alert(a)
+                content = head + format_alert(a)
+                # 附加对应的防范/处置措施
+                content = append_actions(content, type_name, action_map)
 
             # 多通道推送：企业微信（群，主推）/ PushPlus（自己）/ WxPusher（群发关注者）；任一成功即算成功
             ok_wecom = bool(wecom_url) and wecom_webhook_send(wecom_url, title, content)
