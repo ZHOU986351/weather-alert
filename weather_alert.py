@@ -230,6 +230,13 @@ def load_config() -> dict:
         except Exception:
             pass
 
+    inc_env = os.environ.get("INCLUDE_TYPES", "").strip()
+    if inc_env:
+        try:
+            cfg["include_types"] = json.loads(inc_env)
+        except Exception:
+            cfg["include_types"] = [c.strip() for c in inc_env.split(",") if c.strip()]
+
     # 防范措施库：默认用代码里的 DEFAULT_ACTION_MAP，config.json 或 env 可覆盖
     action_env = os.environ.get("ACTION_MAP", "").strip()
     if action_env:
