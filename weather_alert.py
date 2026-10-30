@@ -132,6 +132,13 @@ DEFAULT_ACTION_MAP = {
     "寒潮": _ACT_COLD, "降温": _ACT_COLD,
 }
 
+# 推送文案替换规则：让措辞更贴合车队受众（按顺序替换，先长后短）
+# 说明：气象台预警的「防御指南」原文常用"相关部门"等措辞，此处自动替换为"相关车队"
+TEXT_REPLACE = [
+    ("相关部门和人员", "相关车队及人员"),
+    ("相关部门", "相关车队"),
+]
+
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -434,12 +441,19 @@ def append_actions(content: str, type_name: str, action_map: dict) -> str:
     actions = match_actions(type_name, action_map)
     if not actions:
         return content
-    parts = [content, "", "──────────", "【防范措施】"]
+    parts = [content, "", "──────────", "⭐⭐⭐【防范措施】"]
     for kw, act in actions:
         if len(actions) > 1:
             parts.append(f"〔{kw}〕")
         parts.append(act)
     return "\n".join(parts)
+
+
+def apply_text_replace(text: str) -> str:
+    """按 TEXT_REPLACE 规则替换文案措辞（如"相关部门"→"相关车队"）。"""
+    for src, dst in TEXT_REPLACE:
+        text = text.replace(src, dst)
+    return text
 
 
 # ---------------------------------------------------------------- 主流程
@@ -497,6 +511,9 @@ def run_once(cfg: dict) -> dict:
                 content = head + format_alert(a)
                 # 附加对应的防范/处置措施
                 content = append_actions(content, type_name, action_map)
+
+            # 统一文案替换（如"相关部门"→"相关车队"）
+            content = apply_text_replace(content)
 
             # 多通道推送：企业微信（群，主推）/ PushPlus（自己）/ WxPusher（群发关注者）；任一成功即算成功
             ok_wecom = bool(wecom_url) and wecom_webhook_send(wecom_url, title, content)
